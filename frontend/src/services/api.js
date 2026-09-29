@@ -2,19 +2,30 @@ import axios from "axios";
 
 const api = axios.create({
   baseURL: "http://localhost:5000/api",
-  headers: {
-    "Content-Type": "application/json",
+});
+
+api.interceptors.request.use(
+  (config) => {
+    const token = localStorage.getItem("kyros_token");
+
+    if (token) {
+      config.headers.Authorization = `Bearer ${token}`;
+    }
+
+    // FormData ke case mein browser ko
+    // Content-Type + boundary automatically set karne do.
+    if (config.data instanceof FormData) {
+      delete config.headers["Content-Type"];
+      delete config.headers["content-type"];
+    } else {
+      config.headers["Content-Type"] = "application/json";
+    }
+
+    return config;
   },
-});
-
-api.interceptors.request.use((config) => {
-  const token = localStorage.getItem("kyros_token");
-
-  if (token) {
-    config.headers.Authorization = `Bearer ${token}`;
+  (error) => {
+    return Promise.reject(error);
   }
-
-  return config;
-});
+);
 
 export default api;

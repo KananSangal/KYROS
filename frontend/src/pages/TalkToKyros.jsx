@@ -1,865 +1,1490 @@
-import { useEffect, useRef, useState } from "react";
-import {
-  Bot,
-  Mic,
-  MicOff,
-  Send,
-  Volume2,
-  LoaderCircle,
-  Sparkles,
-  UserRound,
-  Square,
-  RotateCcw,
-} from "lucide-react";
 
+import React, { useEffect, useRef, useState } from "react";
 import api from "../services/api";
-import "./TalkToKyros.css";
+
+const API_BASE = "http://localhost:5000";
 
 export default function TalkToKyros() {
-  const [children, setChildren] = useState([]);
-  const [states, setStates] = useState([]);
 
-  const [selectedChild, setSelectedChild] = useState("");
-  const [selectedState, setSelectedState] = useState("");
+  // =====================================================
+  // STATES
+  // =====================================================
 
-  const [message, setMessage] = useState("");
-  const [messages, setMessages] = useState([]);
-
-  const [loading, setLoading] = useState(false);
-  const [loadingData, setLoadingData] = useState(true);
+  const [serialSupported, setSerialSupported] = useState(false);
+  const [toyConnected, setToyConnected] = useState(false);
 
   const [recording, setRecording] = useState(false);
-  const [voiceLoading, setVoiceLoading] = useState(false);
+  const [processing, setProcessing] = useState(false);
 
-  const [sessionId, setSessionId] = useState(null);
-  const [sessionStarting, setSessionStarting] = useState(false);
+  const [status, setStatus] = useState(
+    "Connect KYROS to begin"
+  );
+
+  const [transcript, setTranscript] = useState("");
+  const [reply, setReply] = useState("");
+
+  const [hugDetected, setHugDetected] = useState(false);
+
+  const [messages, setMessages] = useState([]);
+
+
+  // =====================================================
+  // REFS
+  // =====================================================
+
+  const portRef = useRef(null);
+
+  const readerRef = useRef(null);
+
+  const writerRef = useRef(null);
 
   const mediaRecorderRef = useRef(null);
+
   const audioChunksRef = useRef([]);
 
-  const messagesEndRef = useRef(null);
+  const audioRef = useRef(null);
+
+  const serialBufferRef = useRef("");
+
+  const processingHugRef = useRef(false);
+
+
+  // =====================================================
+  // CHECK WEB SERIAL
+  // =====================================================
 
   useEffect(() => {
-    loadData();
+
+    setSerialSupported(
+      "serial" in navigator
+    );
+
   }, []);
 
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({
-      behavior: "smooth",
-    });
-  }, [messages]);
 
-  const loadData = async () => {
+  // =====================================================
+  // SEND COMMAND TO TOY
+  // =====================================================
+
+  const sendToyCommand = async (command) => {
+
     try {
-      setLoadingData(true);
 
-      const [childrenResponse, statesResponse] =
-        await Promise.all([
-          api.get("/children"),
-          api.get("/cultural/states"),
-        ]);
+      const port = portRef.current;
 
-      const loadedChildren =
-        childrenResponse.data.children || [];
-
-      const loadedStates =
-        statesResponse.data.states || [];
-
-      setChildren(loadedChildren);
-      setStates(loadedStates);
-
-      if (loadedChildren.length > 0) {
-        setSelectedChild(loadedChildren[0]._id);
+      if (!port || !port.writable) {
+        return;
       }
-    } catch (error) {
-      console.error("Unable to load KYROS data:", error);
-    } finally {
-      setLoadingData(false);
-    }
-  };
 
-  const startSession = async () => {
-    if (!selectedChild || sessionId) {
-      return;
-    }
+      const writer =
+        port.writable.getWriter();
 
-    try {
-      setSessionStarting(true);
+      writerRef.current = writer;
 
-      const selectedStateObject = states.find(
-        (state) => state._id === selectedState
+      const encoder =
+        new TextEncoder();
+
+      await writer.write(
+        encoder.encode(`${command}\n`)
       );
 
-      const response = await api.post("/sessions", {
-        childId: selectedChild,
-        type: "conversation",
-        title: "Talk to KYROS",
-        state: selectedStateObject?._id || null,
-        language: "English",
-      });
+      writer.releaseLock();
 
-      setSessionId(response.data.session._id);
+      writerRef.current = null;
+
     } catch (error) {
-      console.error("Unable to start session:", error);
-    } finally {
-      setSessionStarting(false);
-    }
-  };
 
-  const ensureSession = async () => {
-    if (sessionId) {
-      return sessionId;
-    }
-
-    if (!selectedChild) {
-      return null;
-    }
-
-    try {
-      setSessionStarting(true);
-
-      const selectedStateObject = states.find(
-        (state) => state._id === selectedState
+      console.error(
+        "Toy command error:",
+        error
       );
 
-      const response = await api.post("/sessions", {
-        childId: selectedChild,
-        type: "conversation",
-        title: "Talk to KYROS",
-        state: selectedStateObject?._id || null,
-        language: "English",
-      });
-
-      const newSessionId = response.data.session._id;
-
-      setSessionId(newSessionId);
-
-      return newSessionId;
-    } catch (error) {
-      console.error("Unable to start session:", error);
-      return null;
-    } finally {
-      setSessionStarting(false);
     }
+
   };
 
-  const sendMessage = async () => {
-    const cleanMessage = message.trim();
 
-    if (!cleanMessage || loading) {
+  // =====================================================
+  // SERIAL READER
+  // =====================================================
+
+  const readSerialLoop = async () => {
+
+    const port = portRef.current;
+
+    if (!port || !port.readable) {
       return;
     }
 
-    if (!selectedChild) {
-      alert("Please select a child first.");
+    while (
+      port.readable &&
+      portRef.current === port
+    ) {
+
+      const reader =
+        port.readable.getReader();
+
+      readerRef.current = reader;
+
+      try {
+
+        const decoder =
+          new TextDecoder();
+
+        while (true) {
+
+          const { value, done } =
+            await reader.read();
+
+          if (done) {
+            break;
+          }
+
+          if (!value) {
+            continue;
+          }
+
+          serialBufferRef.current +=
+            decoder.decode(value);
+
+          const lines =
+            serialBufferRef.current.split("\n");
+
+          serialBufferRef.current =
+            lines.pop() || "";
+
+          for (const line of lines) {
+
+            const message =
+              line.trim();
+
+            if (!message) {
+              continue;
+            }
+
+            console.log(
+              "KYROS:",
+              message
+            );
+
+            if (message === "HUG") {
+
+              await handleHug();
+
+            }
+
+          }
+
+        }
+
+      } catch (error) {
+
+        console.error(
+          "Serial read error:",
+          error
+        );
+
+      } finally {
+
+        reader.releaseLock();
+
+        readerRef.current = null;
+
+      }
+
+    }
+
+  };
+
+
+  // =====================================================
+  // CONNECT TO ESP32
+  // =====================================================
+
+  const connectToy = async () => {
+
+    if (!("serial" in navigator)) {
+
+      alert(
+        "Web Serial is not supported. Please use Google Chrome or Microsoft Edge."
+      );
+
+      return;
+
+    }
+
+
+    try {
+
+      setStatus(
+        "Select your ESP32 serial port..."
+      );
+
+
+      const port =
+        await navigator.serial.requestPort();
+
+
+      await port.open({
+        baudRate: 115200
+      });
+
+
+      portRef.current = port;
+
+      setToyConnected(true);
+
+      setStatus(
+        "KYROS connected"
+      );
+
+
+      await sendToyCommand(
+        "IDLE"
+      );
+
+
+      readSerialLoop();
+
+
+    } catch (error) {
+
+      console.error(
+        "Toy connection failed:",
+        error
+      );
+
+      setToyConnected(false);
+
+      setStatus(
+        "Toy connection cancelled"
+      );
+
+    }
+
+  };
+
+
+  // =====================================================
+  // DISCONNECT TOY
+  // =====================================================
+
+  const disconnectToy = async () => {
+
+    try {
+
+      const port =
+        portRef.current;
+
+      if (!port) {
+        return;
+      }
+
+
+      if (readerRef.current) {
+
+        try {
+
+          await readerRef.current.cancel();
+
+        } catch {}
+
+      }
+
+
+      await port.close();
+
+      portRef.current = null;
+
+      setToyConnected(false);
+
+      setStatus(
+        "Toy disconnected"
+      );
+
+    } catch (error) {
+
+      console.error(
+        "Disconnect error:",
+        error
+      );
+
+    }
+
+  };
+
+
+  // =====================================================
+  // HANDLE PHYSICAL HUG
+  // =====================================================
+
+  const handleHug = async () => {
+
+    if (processingHugRef.current) {
       return;
     }
 
-    const userMessage = {
-      id: Date.now(),
-      role: "user",
-      text: cleanMessage,
-    };
+    processingHugRef.current = true;
+
+
+    setHugDetected(true);
+
+    setStatus(
+      "🤗 KYROS felt your hug"
+    );
+
 
     setMessages((previous) => [
       ...previous,
-      userMessage,
+      {
+        type: "system",
+        text: "🤗 KYROS detected a hug"
+      }
     ]);
 
-    setMessage("");
-    setLoading(true);
+
+    await sendToyCommand(
+      "HAPPY"
+    );
+
+
+    await new Promise(
+      (resolve) =>
+        setTimeout(resolve, 700)
+    );
+
+
+    await sendToyCommand(
+      "THINKING"
+    );
+
+
+    setStatus(
+      "🧠 KYROS is thinking..."
+    );
+
 
     try {
-      await ensureSession();
 
-      const selectedStateObject = states.find(
-        (state) => state._id === selectedState
-      );
-
-      const response = await api.post("/ai/chat", {
-        message: cleanMessage,
-        childId: selectedChild,
-        stateCode: selectedStateObject?.code || undefined,
-      });
-
-      const reply = response.data.reply;
-
-      setMessages((previous) => [
-        ...previous,
-        {
-          id: Date.now() + 1,
-          role: "kyros",
-          text: reply,
-        },
-      ]);
-    } catch (error) {
-      console.error("KYROS chat error:", error);
-
-      setMessages((previous) => [
-        ...previous,
-        {
-          id: Date.now() + 1,
-          role: "error",
-          text:
-            error.response?.data?.message ||
-            "Sorry, KYROS could not respond right now.",
-        },
-      ]);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleMessageKeyDown = (event) => {
-    if (event.key === "Enter" && !event.shiftKey) {
-      event.preventDefault();
-      sendMessage();
-    }
-  };
-
-  const startRecording = async () => {
-    if (recording || voiceLoading) {
-      return;
-    }
-
-    if (!selectedChild) {
-      alert("Please select a child first.");
-      return;
-    }
-
-    if (!navigator.mediaDevices?.getUserMedia) {
-      alert(
-        "Microphone access is not supported in this browser."
-      );
-      return;
-    }
-
-    try {
-      const stream =
-        await navigator.mediaDevices.getUserMedia({
-          audio: true,
-        });
-
-      let mimeType = "";
-
-      if (
-        MediaRecorder.isTypeSupported(
-          "audio/webm;codecs=opus"
-        )
-      ) {
-        mimeType = "audio/webm;codecs=opus";
-      } else if (
-        MediaRecorder.isTypeSupported("audio/webm")
-      ) {
-        mimeType = "audio/webm";
-      }
-
-      const recorder = mimeType
-        ? new MediaRecorder(stream, { mimeType })
-        : new MediaRecorder(stream);
-
-      audioChunksRef.current = [];
-
-      recorder.ondataavailable = (event) => {
-        if (event.data.size > 0) {
-          audioChunksRef.current.push(event.data);
-        }
-      };
-
-      recorder.onstop = async () => {
-        stream.getTracks().forEach((track) => {
-          track.stop();
-        });
-
-        const blob = new Blob(
-          audioChunksRef.current,
+      const response =
+        await api.post(
+          "/device/interaction",
           {
-            type:
-              recorder.mimeType ||
-              "audio/webm",
+            deviceId:
+              "KYROS-ESP32-01",
+
+            message:
+              "The child just hugged you. Respond warmly like a friendly Indian cultural companion for a child. Give a short cheerful greeting and one interesting fact about Indian culture. Keep the response under 40 words."
           }
         );
 
-        await sendVoiceMessage(blob);
-      };
 
-      mediaRecorderRef.current = recorder;
+      const data =
+        response.data;
 
-      recorder.start();
-      setRecording(true);
+
+      const aiReply =
+        data.reply || "";
+
+
+      setReply(aiReply);
+
+
+      setMessages((previous) => [
+        ...previous,
+        {
+          type: "kyros",
+          text: aiReply
+        }
+      ]);
+
+
+      // -------------------------------------------------
+      // PLAY RESPONSE
+      // -------------------------------------------------
+
+      if (data.audio?.path) {
+
+        await playAudio(
+          `${API_BASE}${data.audio.path}`
+        );
+
+      }
+
+
     } catch (error) {
-      console.error("Microphone error:", error);
 
-      alert(
-        "Microphone permission was denied or unavailable."
+      console.error(
+        "Hug interaction failed:",
+        error
       );
+
+
+      setStatus(
+        "KYROS connection error"
+      );
+
+
+      setMessages((previous) => [
+        ...previous,
+        {
+          type: "error",
+          text: "KYROS could not respond right now."
+        }
+      ]);
+
     }
+
+
+    await sendToyCommand(
+      "HAPPY"
+    );
+
+
+    setStatus(
+      "😊 KYROS is happy"
+    );
+
+
+    setTimeout(() => {
+
+      setHugDetected(false);
+
+      sendToyCommand(
+        "IDLE"
+      );
+
+      setStatus(
+        "Ready"
+      );
+
+    }, 2500);
+
+
+    processingHugRef.current = false;
+
   };
 
-  const stopRecording = () => {
-    if (!mediaRecorderRef.current) {
+
+  // =====================================================
+  // PLAY AUDIO
+  // =====================================================
+
+  const playAudio = async (url) => {
+
+    return new Promise(
+      (resolve) => {
+
+        sendToyCommand(
+          "SPEAKING"
+        );
+
+        setStatus(
+          "🔊 KYROS is speaking..."
+        );
+
+
+        const audio =
+          new Audio(url);
+
+        audioRef.current =
+          audio;
+
+
+        audio.onended = () => {
+
+          sendToyCommand(
+            "HAPPY"
+          );
+
+          resolve();
+
+        };
+
+
+        audio.onerror = () => {
+
+          resolve();
+
+        };
+
+
+        audio.play().catch(
+          (error) => {
+
+            console.error(
+              "Audio playback error:",
+              error
+            );
+
+            resolve();
+
+          }
+        );
+
+      }
+    );
+
+  };
+
+
+  // =====================================================
+  // START MICROPHONE
+  // =====================================================
+
+  const startRecording = async () => {
+
+    if (recording || processing) {
       return;
     }
 
-    if (
-      mediaRecorderRef.current.state === "recording"
-    ) {
-      mediaRecorderRef.current.stop();
-      setRecording(false);
-    }
-  };
-
-  const sendVoiceMessage = async (audioBlob) => {
-    setVoiceLoading(true);
 
     try {
-      await ensureSession();
 
-      const selectedStateObject = states.find(
-        (state) => state._id === selectedState
+      const stream =
+        await navigator.mediaDevices.getUserMedia({
+          audio: true
+        });
+
+
+      const recorder =
+        new MediaRecorder(
+          stream
+        );
+
+
+      mediaRecorderRef.current =
+        recorder;
+
+      audioChunksRef.current =
+        [];
+
+
+      recorder.ondataavailable =
+        (event) => {
+
+          if (
+            event.data &&
+            event.data.size > 0
+          ) {
+
+            audioChunksRef.current.push(
+              event.data
+            );
+
+          }
+
+        };
+
+
+      recorder.onstop =
+        async () => {
+
+          stream
+            .getTracks()
+            .forEach(
+              (track) =>
+                track.stop()
+            );
+
+
+          const audioBlob =
+            new Blob(
+              audioChunksRef.current,
+              {
+                type:
+                  recorder.mimeType ||
+                  "audio/webm"
+              }
+            );
+
+
+          await sendVoiceToKyros(
+            audioBlob
+          );
+
+        };
+
+
+      recorder.start();
+
+      setRecording(true);
+
+      setStatus(
+        "🎤 Listening..."
       );
 
-      const formData = new FormData();
 
-      const extension =
-        audioBlob.type.includes("webm")
-          ? "webm"
-          : "wav";
+      await sendToyCommand(
+        "THINKING"
+      );
+
+
+    } catch (error) {
+
+      console.error(
+        "Microphone error:",
+        error
+      );
+
+
+      setStatus(
+        "Microphone permission denied"
+      );
+
+    }
+
+  };
+
+
+  // =====================================================
+  // STOP MICROPHONE
+  // =====================================================
+
+  const stopRecording = () => {
+
+    const recorder =
+      mediaRecorderRef.current;
+
+    if (
+      !recorder ||
+      recorder.state === "inactive"
+    ) {
+
+      return;
+
+    }
+
+
+    setRecording(false);
+
+    setProcessing(true);
+
+    setStatus(
+      "🧠 KYROS is thinking..."
+    );
+
+
+    recorder.stop();
+
+  };
+
+
+  // =====================================================
+  // SEND VOICE TO BACKEND
+  // =====================================================
+
+  const sendVoiceToKyros = async (
+    audioBlob
+  ) => {
+
+    try {
+
+      const formData =
+        new FormData();
+
+
+      let extension =
+        "webm";
+
+
+      if (
+        audioBlob.type.includes(
+          "mp4"
+        )
+      ) {
+
+        extension = "mp4";
+
+      }
+
 
       formData.append(
         "audio",
         audioBlob,
-        `kyros-recording.${extension}`
+        `kyros-laptop-voice.${extension}`
       );
 
-      formData.append(
-        "childId",
-        selectedChild
-      );
 
-      if (selectedStateObject?.code) {
-        formData.append(
-          "stateCode",
-          selectedStateObject.code
+      const response =
+        await api.post(
+          "/ai/voice-chat",
+          formData
         );
-      }
 
-      const response = await api.post(
-        "/ai/voice-chat",
-        formData,
+
+      const data =
+        response.data;
+
+
+      const userTranscript =
+        data.transcript || "";
+
+
+      const aiReply =
+        data.reply || "";
+
+
+      setTranscript(
+        userTranscript
+      );
+
+
+      setReply(
+        aiReply
+      );
+
+
+      setMessages((previous) => [
+
+        ...previous,
+
         {
-          headers: {
-            "Content-Type": "multipart/form-data",
-          },
+          type: "user",
+          text: userTranscript
+        },
+
+        {
+          type: "kyros",
+          text: aiReply
         }
-      );
 
-      const transcript =
-        response.data.transcript || "";
+      ]);
 
-      const reply =
-        response.data.reply || "";
 
-      if (transcript) {
-        setMessages((previous) => [
-          ...previous,
-          {
-            id: Date.now(),
-            role: "user",
-            text: transcript,
-            voice: true,
-          },
-        ]);
-      }
+      // -------------------------------------------------
+      // PLAY AI RESPONSE
+      // -------------------------------------------------
 
-      if (reply) {
-        setMessages((previous) => [
-          ...previous,
-          {
-            id: Date.now() + 1,
-            role: "kyros",
-            text: reply,
-            voice: true,
-          },
-        ]);
-      }
+      if (data.audio?.path) {
 
-      if (response.data.audio?.path) {
-        const audio = new Audio(
-          `http://localhost:5000${response.data.audio.path}`
+        await playAudio(
+          `${API_BASE}${data.audio.path}`
         );
 
-        audio.play().catch((error) => {
-          console.error(
-            "Unable to autoplay KYROS audio:",
-            error
-          );
-        });
       }
-    } catch (error) {
-      console.error("KYROS voice error:", error);
 
-      setMessages((previous) => [
-        ...previous,
-        {
-          id: Date.now(),
-          role: "error",
-          text:
-            error.response?.data?.message ||
-            "KYROS could not understand the voice message.",
-        },
-      ]);
-    } finally {
-      setVoiceLoading(false);
-    }
-  };
 
-  const endConversation = async () => {
-    if (!sessionId) {
-      return;
-    }
-
-    try {
-      const response = await api.post(
-        `/sessions/${sessionId}/end`
+      setStatus(
+        "😊 KYROS is happy"
       );
 
-      const earned =
-        response.data.session?.xpEarned || 0;
 
-      setMessages((previous) => [
-        ...previous,
-        {
-          id: Date.now(),
-          role: "system",
-          text: `Conversation completed. You earned ${earned} XP!`,
-        },
-      ]);
+      await sendToyCommand(
+        "HAPPY"
+      );
 
-      setSessionId(null);
+
+      setTimeout(() => {
+
+        sendToyCommand(
+          "IDLE"
+        );
+
+        setStatus(
+          "Ready"
+        );
+
+      }, 1500);
+
+
     } catch (error) {
+
       console.error(
-        "Unable to end conversation:",
+        "Voice chat error:",
         error
       );
+
+
+      setStatus(
+        "KYROS could not understand that"
+      );
+
+
+      await sendToyCommand(
+        "SAD"
+      );
+
+
+      setTimeout(() => {
+
+        sendToyCommand(
+          "IDLE"
+        );
+
+      }, 1200);
+
+
+    } finally {
+
+      setProcessing(false);
+
     }
+
   };
 
-  const resetConversation = () => {
-    setMessages([]);
-    setMessage("");
-    setSessionId(null);
-  };
 
-  const selectedChildObject = children.find(
-    (child) => child._id === selectedChild
-  );
+  // =====================================================
+  // CLEANUP
+  // =====================================================
 
-  if (loadingData) {
-    return (
-      <div className="talk-loading">
-        <LoaderCircle
-          size={30}
-          className="talk-spinner"
-        />
-        <span>Preparing KYROS...</span>
-      </div>
-    );
-  }
+  useEffect(() => {
+
+    return () => {
+
+      try {
+
+        if (
+          readerRef.current
+        ) {
+
+          readerRef.current.cancel();
+
+        }
+
+      } catch {}
+
+
+      try {
+
+        if (
+          portRef.current
+        ) {
+
+          portRef.current.close();
+
+        }
+
+      } catch {}
+
+    };
+
+  }, []);
+
+
+  // =====================================================
+  // UI
+  // =====================================================
 
   return (
-    <div className="talk-page">
-      <div className="talk-header">
-        <div>
-          <p className="talk-eyebrow">
-            KYROS · AI COMPANION
-          </p>
 
-          <h1>Talk to KYROS</h1>
+    <div
+      style={{
+        minHeight: "100vh",
+        background:
+          "linear-gradient(135deg,#f7f9fc,#eef3f8)",
+        padding: "32px",
+        fontFamily:
+          "Inter, Arial, sans-serif",
+        color: "#172033"
+      }}
+    >
 
-          <p>
-            Ask KYROS about stories, India, culture,
-            languages, festivals and anything you are
-            curious about.
-          </p>
-        </div>
+      <div
+        style={{
+          maxWidth: "1150px",
+          margin: "0 auto"
+        }}
+      >
 
-        <div className="kyros-status">
-          <span className="status-dot" />
-          <span>KYROS online</span>
-        </div>
-      </div>
+        {/* HEADER */}
 
-      <div className="talk-layout">
-        <aside className="talk-sidebar">
-          <div className="talk-panel">
-            <div className="panel-heading">
-              <UserRound size={17} />
-              <span>Child</span>
-            </div>
+        <div
+          style={{
+            display: "flex",
+            justifyContent:
+              "space-between",
+            alignItems: "center",
+            marginBottom: "28px"
+          }}
+        >
 
-            <select
-              value={selectedChild}
-              onChange={(event) => {
-                setSelectedChild(event.target.value);
-                setSessionId(null);
-                setMessages([]);
+          <div>
+
+            <div
+              style={{
+                fontSize: "14px",
+                fontWeight: "700",
+                letterSpacing:
+                  "2px",
+                color: "#64748b"
               }}
             >
-              {children.length === 0 ? (
-                <option value="">
-                  No child available
-                </option>
-              ) : (
-                children.map((child) => (
-                  <option
-                    key={child._id}
-                    value={child._id}
-                  >
-                    {child.name}
-                  </option>
-                ))
-              )}
-            </select>
-
-            {selectedChildObject && (
-              <div className="child-mini-card">
-                <div className="child-avatar">
-                  {selectedChildObject.name
-                    ?.charAt(0)
-                    ?.toUpperCase()}
-                </div>
-
-                <div>
-                  <strong>
-                    {selectedChildObject.name}
-                  </strong>
-
-                  <span>
-                    Age {selectedChildObject.age}
-                  </span>
-                </div>
-              </div>
-            )}
-          </div>
-
-          <div className="talk-panel">
-            <div className="panel-heading">
-              <Sparkles size={17} />
-              <span>Cultural context</span>
+              SMART CULTURAL COMPANION
             </div>
 
-            <select
-              value={selectedState}
-              onChange={(event) =>
-                setSelectedState(event.target.value)
-              }
+            <h1
+              style={{
+                margin:
+                  "6px 0 0",
+                fontSize: "38px"
+              }}
             >
-              <option value="">
-                General India
-              </option>
+              KYROS
+            </h1>
 
-              {states.map((state) => (
-                <option
-                  key={state._id}
-                  value={state._id}
-                >
-                  {state.name}
-                </option>
-              ))}
-            </select>
-
-            <p className="context-help">
-              Choose a state to help KYROS focus the
-              conversation on that culture.
+            <p
+              style={{
+                marginTop: "6px",
+                color: "#64748b"
+              }}
+            >
+              Physical AI companion prototype
             </p>
+
           </div>
 
-          <div className="talk-panel session-panel">
-            <div className="panel-heading">
-              <Bot size={17} />
-              <span>Session</span>
-            </div>
 
-            <div className="session-status">
-              <span
-                className={
-                  sessionId
-                    ? "session-indicator active"
-                    : "session-indicator"
-                }
-              />
+          <div>
 
-              {sessionId
-                ? "Conversation active"
-                : "No active conversation"}
-            </div>
+            {!toyConnected ? (
 
-            {!sessionId ? (
               <button
-                className="session-start-button"
-                onClick={startSession}
-                disabled={
-                  !selectedChild ||
-                  sessionStarting
-                }
+                onClick={connectToy}
+                disabled={!serialSupported}
+                style={{
+                  padding:
+                    "13px 20px",
+                  borderRadius:
+                    "12px",
+                  border: "none",
+                  background:
+                    "#172033",
+                  color: "white",
+                  fontWeight: "700",
+                  cursor:
+                    "pointer"
+                }}
               >
-                {sessionStarting ? (
-                  <>
-                    <LoaderCircle
-                      size={16}
-                      className="talk-spinner"
-                    />
-                    Starting...
-                  </>
-                ) : (
-                  "Start conversation"
-                )}
+                🔌 Connect KYROS
               </button>
+
             ) : (
+
               <button
-                className="session-end-button"
-                onClick={endConversation}
+                onClick={disconnectToy}
+                style={{
+                  padding:
+                    "13px 20px",
+                  borderRadius:
+                    "12px",
+                  border:
+                    "1px solid #cbd5e1",
+                  background:
+                    "white",
+                  color:
+                    "#172033",
+                  fontWeight:
+                    "700",
+                  cursor:
+                    "pointer"
+                }}
               >
-                End conversation
+                ● KYROS Connected
               </button>
+
             )}
+
           </div>
-        </aside>
 
-        <section className="chat-card">
-          <div className="chat-topbar">
-            <div className="chat-identity">
-              <div className="kyros-avatar">
-                <Bot size={23} />
-              </div>
+        </div>
 
-              <div>
-                <strong>KYROS</strong>
-                <span>
-                  Your cultural learning companion
-                </span>
-              </div>
-            </div>
 
-            <button
-              className="reset-button"
-              onClick={resetConversation}
-              title="New conversation"
+        {/* MAIN */}
+
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns:
+              "1fr 1.35fr",
+            gap: "24px"
+          }}
+        >
+
+          {/* TOY STATUS */}
+
+          <div
+            style={{
+              background:
+                "white",
+              borderRadius:
+                "24px",
+              padding:
+                "28px",
+              boxShadow:
+                "0 15px 45px rgba(15,23,42,.08)"
+            }}
+          >
+
+            <div
+              style={{
+                color:
+                  "#64748b",
+                fontSize:
+                  "13px",
+                fontWeight:
+                  "700",
+                textTransform:
+                  "uppercase",
+                letterSpacing:
+                  "1px"
+              }}
             >
-              <RotateCcw size={17} />
-            </button>
-          </div>
-
-          <div className="messages-area">
-            {messages.length === 0 ? (
-              <div className="empty-chat">
-                <div className="empty-kyros-icon">
-                  <Bot size={34} />
-                </div>
-
-                <h2>Namaste! I'm KYROS 👋</h2>
-
-                <p>
-                  Let's explore India's amazing culture
-                  together.
-                </p>
-
-                <div className="suggestion-grid">
-                  <button
-                    onClick={() =>
-                      setMessage(
-                        "Tell me a fun story from India."
-                      )
-                    }
-                  >
-                    📖 Tell me a story
-                  </button>
-
-                  <button
-                    onClick={() =>
-                      setMessage(
-                        "Tell me something interesting about Rajasthan."
-                      )
-                    }
-                  >
-                    🏰 Explore Rajasthan
-                  </button>
-
-                  <button
-                    onClick={() =>
-                      setMessage(
-                        "Teach me a traditional Indian greeting."
-                      )
-                    }
-                  >
-                    🗣️ Teach me a greeting
-                  </button>
-
-                  <button
-                    onClick={() =>
-                      setMessage(
-                        "Tell me a fun fact about Indian festivals."
-                      )
-                    }
-                  >
-                    🎉 Fun festival fact
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <div className="message-list">
-                {messages.map((item) => (
-                  <div
-                    className={`message-row ${item.role}`}
-                    key={item.id}
-                  >
-                    {item.role === "kyros" && (
-                      <div className="message-avatar kyros-message-avatar">
-                        <Bot size={17} />
-                      </div>
-                    )}
-
-                    {item.role === "user" && (
-                      <div className="message-avatar user-message-avatar">
-                        <UserRound size={16} />
-                      </div>
-                    )}
-
-                    <div className="message-content">
-                      <span className="message-label">
-                        {item.role === "kyros"
-                          ? "KYROS"
-                          : item.role === "user"
-                          ? "You"
-                          : item.role === "system"
-                          ? "Session"
-                          : "Notice"}
-                      </span>
-
-                      <div className="message-bubble">
-                        {item.text}
-
-                        {item.voice &&
-                          item.role === "user" && (
-                            <Mic
-                              size={13}
-                              className="voice-message-icon"
-                            />
-                          )}
-                      </div>
-                    </div>
-                  </div>
-                ))}
-
-                {(loading || voiceLoading) && (
-                  <div className="message-row kyros">
-                    <div className="message-avatar kyros-message-avatar">
-                      <Bot size={17} />
-                    </div>
-
-                    <div className="message-content">
-                      <span className="message-label">
-                        KYROS
-                      </span>
-
-                      <div className="typing-bubble">
-                        <span />
-                        <span />
-                        <span />
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                <div ref={messagesEndRef} />
-              </div>
-            )}
-          </div>
-
-          <div className="chat-composer">
-            <div className="composer-row">
-              <textarea
-                value={message}
-                onChange={(event) =>
-                  setMessage(event.target.value)
-                }
-                onKeyDown={handleMessageKeyDown}
-                placeholder={
-                  recording
-                    ? "Listening..."
-                    : "Ask KYROS anything..."
-                }
-                rows={1}
-                disabled={
-                  recording ||
-                  voiceLoading ||
-                  loading
-                }
-              />
-
-              <button
-                className={`voice-button ${
-                  recording ? "recording" : ""
-                }`}
-                onClick={
-                  recording
-                    ? stopRecording
-                    : startRecording
-                }
-                disabled={voiceLoading || loading}
-                title={
-                  recording
-                    ? "Stop recording"
-                    : "Talk to KYROS"
-                }
-              >
-                {recording ? (
-                  <Square size={19} />
-                ) : voiceLoading ? (
-                  <LoaderCircle
-                    size={20}
-                    className="talk-spinner"
-                  />
-                ) : (
-                  <Mic size={21} />
-                )}
-              </button>
-
-              <button
-                className="send-button"
-                onClick={sendMessage}
-                disabled={
-                  !message.trim() ||
-                  loading ||
-                  recording ||
-                  voiceLoading
-                }
-              >
-                {loading ? (
-                  <LoaderCircle
-                    size={20}
-                    className="talk-spinner"
-                  />
-                ) : (
-                  <Send size={20} />
-                )}
-              </button>
+              Physical device
             </div>
 
-            <div className="composer-footer">
-              <span>
-                <Volume2 size={13} />
-                Voice replies are played automatically
-              </span>
 
-              <span>
-                Press Enter to send
-              </span>
+            <div
+              style={{
+                marginTop:
+                  "25px",
+                height:
+                  "260px",
+                borderRadius:
+                  "22px",
+                background:
+                  "#f1f5f9",
+                display:
+                  "flex",
+                alignItems:
+                  "center",
+                justifyContent:
+                  "center",
+                flexDirection:
+                  "column"
+              }}
+            >
+
+              <div
+                style={{
+                  fontSize:
+                    "72px"
+                }}
+              >
+                🧸
+              </div>
+
+              <div
+                style={{
+                  marginTop:
+                    "15px",
+                  fontSize:
+                    "22px",
+                  fontWeight:
+                    "800"
+                }}
+              >
+                {hugDetected
+                  ? "Hug detected!"
+                  : "KYROS"}
+              </div>
+
+              <div
+                style={{
+                  marginTop:
+                    "7px",
+                  color:
+                    "#64748b"
+                }}
+              >
+                {status}
+              </div>
+
             </div>
+
+
+            <div
+              style={{
+                display:
+                  "grid",
+                gridTemplateColumns:
+                  "1fr 1fr",
+                gap:
+                  "12px",
+                marginTop:
+                  "18px"
+              }}
+            >
+
+              <div
+                style={{
+                  padding:
+                    "15px",
+                  background:
+                    "#f8fafc",
+                  borderRadius:
+                    "12px"
+                }}
+              >
+
+                <div
+                  style={{
+                    fontSize:
+                      "12px",
+                    color:
+                      "#64748b"
+                  }}
+                >
+                  CONNECTION
+                </div>
+
+                <strong>
+                  {toyConnected
+                    ? "ONLINE"
+                    : "OFFLINE"}
+                </strong>
+
+              </div>
+
+
+              <div
+                style={{
+                  padding:
+                    "15px",
+                  background:
+                    "#f8fafc",
+                  borderRadius:
+                    "12px"
+                }}
+              >
+
+                <div
+                  style={{
+                    fontSize:
+                      "12px",
+                    color:
+                      "#64748b"
+                  }}
+                >
+                  SENSOR
+                </div>
+
+                <strong>
+                  FSR ACTIVE
+                </strong>
+
+              </div>
+
+            </div>
+
           </div>
-        </section>
+
+
+          {/* CONVERSATION */}
+
+          <div
+            style={{
+              background:
+                "white",
+              borderRadius:
+                "24px",
+              padding:
+                "28px",
+              boxShadow:
+                "0 15px 45px rgba(15,23,42,.08)"
+            }}
+          >
+
+            <div
+              style={{
+                color:
+                  "#64748b",
+                fontSize:
+                  "13px",
+                fontWeight:
+                  "700",
+                textTransform:
+                  "uppercase",
+                letterSpacing:
+                  "1px"
+              }}
+            >
+              Conversation
+            </div>
+
+
+            <div
+              style={{
+                minHeight:
+                  "350px",
+                marginTop:
+                  "18px",
+                background:
+                  "#f8fafc",
+                borderRadius:
+                  "18px",
+                padding:
+                  "20px",
+                overflowY:
+                  "auto"
+              }}
+            >
+
+              {messages.length === 0 ? (
+
+                <div
+                  style={{
+                    height:
+                      "310px",
+                    display:
+                      "flex",
+                    alignItems:
+                      "center",
+                    justifyContent:
+                      "center",
+                    color:
+                      "#94a3b8",
+                    textAlign:
+                      "center"
+                  }}
+                >
+
+                  Connect KYROS and start
+                  a conversation.
+
+                </div>
+
+              ) : (
+
+                messages.map(
+                  (message, index) => (
+
+                    <div
+                      key={index}
+                      style={{
+                        marginBottom:
+                          "14px",
+                        display:
+                          "flex",
+                        justifyContent:
+                          message.type ===
+                          "user"
+                            ? "flex-end"
+                            : "flex-start"
+                      }}
+                    >
+
+                      <div
+                        style={{
+                          maxWidth:
+                            "78%",
+                          padding:
+                            "13px 16px",
+                          borderRadius:
+                            "15px",
+                          background:
+                            message.type ===
+                            "user"
+                              ? "#172033"
+                              : "#e2e8f0",
+                          color:
+                            message.type ===
+                            "user"
+                              ? "white"
+                              : "#172033"
+                        }}
+                      >
+
+                        {message.text}
+
+                      </div>
+
+                    </div>
+
+                  )
+                )
+
+              )}
+
+            </div>
+
+
+            <div
+              style={{
+                display:
+                  "flex",
+                gap:
+                  "12px",
+                marginTop:
+                  "18px"
+              }}
+            >
+
+              {!recording ? (
+
+                <button
+                  onClick={
+                    startRecording
+                  }
+                  disabled={
+                    processing ||
+                    !toyConnected
+                  }
+                  style={{
+                    flex:
+                      "1",
+                    padding:
+                      "16px",
+                    border:
+                      "none",
+                    borderRadius:
+                      "14px",
+                    background:
+                      toyConnected
+                        ? "#172033"
+                        : "#cbd5e1",
+                    color:
+                      "white",
+                    fontWeight:
+                      "800",
+                    fontSize:
+                      "15px",
+                    cursor:
+                      toyConnected
+                        ? "pointer"
+                        : "not-allowed"
+                  }}
+                >
+                  🎤 Talk to KYROS
+                </button>
+
+              ) : (
+
+                <button
+                  onClick={
+                    stopRecording
+                  }
+                  style={{
+                    flex:
+                      "1",
+                    padding:
+                      "16px",
+                    border:
+                      "none",
+                    borderRadius:
+                      "14px",
+                    background:
+                      "#dc2626",
+                    color:
+                      "white",
+                    fontWeight:
+                      "800",
+                    fontSize:
+                      "15px",
+                    cursor:
+                      "pointer"
+                  }}
+                >
+                  ⏹ Stop & Send
+                </button>
+
+              )}
+
+            </div>
+
+
+            <div
+              style={{
+                marginTop:
+                  "12px",
+                textAlign:
+                  "center",
+                fontSize:
+                  "13px",
+                color:
+                  "#64748b"
+              }}
+            >
+
+              {processing
+                ? "Processing your message..."
+                : status}
+
+            </div>
+
+          </div>
+
+        </div>
+
+
+        {/* ARCHITECTURE */}
+
+        <div
+          style={{
+            marginTop:
+              "24px",
+            background:
+              "white",
+            borderRadius:
+              "20px",
+            padding:
+              "22px",
+            boxShadow:
+              "0 15px 45px rgba(15,23,42,.06)"
+          }}
+        >
+
+          <div
+            style={{
+              fontWeight:
+                "800",
+              marginBottom:
+                "15px"
+            }}
+          >
+            Live Prototype Pipeline
+          </div>
+
+
+          <div
+            style={{
+              display:
+                "flex",
+              justifyContent:
+                "space-between",
+              alignItems:
+                "center",
+              flexWrap:
+                "wrap",
+              gap:
+                "10px",
+              color:
+                "#475569",
+              fontSize:
+                "14px"
+            }}
+          >
+
+            <span>🤗 FSR</span>
+
+            <span>→</span>
+
+            <span>🧸 ESP32</span>
+
+            <span>→</span>
+
+            <span>👀 OLED Eyes</span>
+
+            <span>→</span>
+
+            <span>💻 Frontend</span>
+
+            <span>→</span>
+
+            <span>🧠 AI</span>
+
+            <span>→</span>
+
+            <span>🔊 Response</span>
+
+          </div>
+
+        </div>
+
       </div>
+
     </div>
+
   );
+
 }

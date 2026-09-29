@@ -30,3 +30,5 @@ build/
 # Temporary
 tmp/
 temp/
+# Generated KYROS audio files
+backend/uploads/audio/*.wav

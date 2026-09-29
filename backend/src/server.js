@@ -18,10 +18,15 @@ const devicesRoutes = require("./routes/devices.routes");
 const aiRoutes = require("./routes/ai.routes");
 const badgeRoutes = require("./routes/badges.routes");
 const sttRoutes = require("./routes/stt.routes");
+const deviceRoutes = require("./routes/device.routes");
 
 const app = express();
 
 const PORT = process.env.PORT || 5000;
+
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`🚀 KYROS Backend running on http://localhost:${PORT}`);
+});
 
 // Middleware
 app.use(cors());
@@ -44,6 +49,7 @@ app.use("/api/devices", devicesRoutes);
 app.use("/api/ai", aiRoutes);
 app.use("/api/badges", badgeRoutes);
 app.use("/api/stt", sttRoutes);
+app.use("/api/device", deviceRoutes);
 
 // Root route
 app.get("/", (req, res) => {
