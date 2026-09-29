@@ -1,17 +1,26 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
+  Activity,
+  BookOpen,
+  Clock3,
   Star,
   Trophy,
-  Clock,
-  Award,
-  ChevronRight,
+  Sparkles,
+  ArrowRight,
+  LoaderCircle,
 } from "lucide-react";
+import { useNavigate } from "react-router-dom";
 import api from "../services/api";
+import "./Dashboard.css";
 
 export default function Dashboard() {
-  const [user, setUser] = useState(null);
+  const navigate = useNavigate();
+
   const [child, setChild] = useState(null);
+  const [sessions, setSessions] = useState([]);
+  const [badges, setBadges] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
 
   useEffect(() => {
     loadDashboard();
@@ -19,305 +28,482 @@ export default function Dashboard() {
 
   const loadDashboard = async () => {
     try {
-      const [userResponse, childrenResponse] = await Promise.all([
-        api.get("/auth/me"),
-        api.get("/children"),
-      ]);
+      setLoading(true);
+      setError("");
 
-      setUser(userResponse.data.user);
+      const childrenResponse = await api.get("/children");
+      const firstChild = childrenResponse.data.children?.[0];
 
-      const children = childrenResponse.data.children || [];
-
-      if (children.length > 0) {
-        setChild(children[0]);
+      if (!firstChild) {
+        setChild(null);
+        setSessions([]);
+        setBadges([]);
+        return;
       }
-    } catch (error) {
-      console.error("Unable to load dashboard:", error);
+
+      setChild(firstChild);
+
+      const [sessionsResponse, badgesResponse] =
+        await Promise.all([
+          api.get(`/sessions/child/${firstChild._id}`),
+          api.get("/badges"),
+        ]);
+
+      setSessions(sessionsResponse.data.sessions || []);
+      setBadges(badgesResponse.data.badges || []);
+    } catch (err) {
+      console.error("Unable to load dashboard:", err);
+
+      setError(
+        err.response?.data?.message ||
+          "Unable to load dashboard."
+      );
     } finally {
       setLoading(false);
     }
   };
 
+  const completedSessions = useMemo(
+    () =>
+      sessions.filter(
+        (session) => session.status === "completed"
+      ),
+    [sessions]
+  );
+
+  const storyCount = useMemo(
+    () =>
+      completedSessions.filter(
+        (session) => session.type === "story"
+      ).length,
+    [completedSessions]
+  );
+
+  const totalScreenFreeSeconds = useMemo(
+    () =>
+      completedSessions.reduce(
+        (total, session) =>
+          total + Number(session.durationSeconds || 0),
+        0
+      ),
+    [completedSessions]
+  );
+
+  const totalMinutes = Math.floor(
+    totalScreenFreeSeconds / 60
+  );
+
+  const screenFreeTime =
+    totalMinutes >= 60
+      ? `${Math.floor(totalMinutes / 60)}h ${
+          totalMinutes % 60
+        }m`
+      : `${totalMinutes}m`;
+
+  const earnedBadges = useMemo(() => {
+    if (!child?.badges) return [];
+
+    const earnedIds = new Set(
+      child.badges.map((item) =>
+        typeof item.badge === "object"
+          ? item.badge._id
+          : item.badge
+      )
+    );
+
+    return badges.filter((badge) =>
+      earnedIds.has(badge._id)
+    );
+  }, [child, badges]);
+
+  const recentSessions = completedSessions.slice(0, 5);
+
+  const formatDuration = (seconds) => {
+    const value = Number(seconds || 0);
+
+    if (value < 60) return `${value}s`;
+
+    const minutes = Math.floor(value / 60);
+
+    if (minutes < 60) return `${minutes} min`;
+
+    const hours = Math.floor(minutes / 60);
+    const remaining = minutes % 60;
+
+    return remaining
+      ? `${hours}h ${remaining}m`
+      : `${hours}h`;
+  };
+
+  const formatDate = (date) => {
+    if (!date) return "";
+
+    return new Date(date).toLocaleDateString("en-IN", {
+      day: "numeric",
+      month: "short",
+    });
+  };
+
   if (loading) {
     return (
-      <div className="page-content">
-        <div className="loading-box">
-          <p>Loading KYROS dashboard...</p>
+      <div className="dashboard-loading">
+        <LoaderCircle
+          size={28}
+          className="dashboard-spinner"
+        />
+        <span>Loading dashboard...</span>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="dashboard-page">
+        <div className="dashboard-error">
+          <h2>Unable to load dashboard</h2>
+          <p>{error}</p>
+
+          <button onClick={loadDashboard}>
+            Try Again
+          </button>
         </div>
       </div>
     );
   }
 
-  const childName = child?.name || "Your Child";
-  const childInitial = childName.charAt(0).toUpperCase();
+  if (!child) {
+    return (
+      <div className="dashboard-page">
+        <div className="dashboard-empty">
+          <div className="dashboard-empty-icon">
+            <Sparkles size={28} />
+          </div>
 
-  const xp = child?.xp || 0;
-  const level = child?.level || 1;
-  const badges = child?.badges?.length || 0;
+          <h2>Welcome to KYROS</h2>
+
+          <p>
+            Add a child profile to start the cultural
+            learning journey.
+          </p>
+
+          <button
+            onClick={() => navigate("/children")}
+          >
+            Add Child
+            <ArrowRight size={16} />
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
-    <div className="page-content">
+    <div className="dashboard-page">
 
-      <header className="dashboard-header">
+      {/* HEADER */}
 
+      <div className="dashboard-header">
         <div>
-          <p className="eyebrow">PARENT DASHBOARD</p>
+          <p className="dashboard-eyebrow">
+            KYROS · PARENT DASHBOARD
+          </p>
 
           <h1>
-            Welcome back
-            {user?.name ? `, ${user.name}` : ""}
+            Welcome back, Parent 👋
           </h1>
 
           <p>
-            Track your child's cultural learning journey with KYROS.
+            Here's how {child.name}'s learning journey is
+            progressing.
           </p>
         </div>
 
-        <div className="header-profile">
-
-          <div className="profile-avatar">
-            {user?.name?.charAt(0)?.toUpperCase() || "P"}
-          </div>
-
-          <div>
-            <strong>{user?.name || "Parent"}</strong>
-            <span>{user?.email || ""}</span>
-          </div>
-
-        </div>
-
-      </header>
-
-      <section className="dashboard-hero">
-
-        <div className="hero-content">
-
-          <p className="eyebrow">
-            YOUR CHILD'S JOURNEY
-          </p>
-
-          <h2>
-            {childName} is exploring India's culture.
-          </h2>
-
-          <p>
-            Continue the journey through stories, languages,
-            traditions, festivals and heritage.
-          </p>
-
-          <a
-            href="/cultural-journey"
-            className="hero-button"
-          >
-            Explore Cultural Journey
-            <ChevronRight size={17} />
-          </a>
-
-        </div>
-
-        <div className="hero-avatar">
-          {childInitial}
-        </div>
-
-      </section>
-
-      <section className="dashboard-stats">
-
-        <div className="stat-card">
-
-          <div className="stat-icon">
-            <Star size={21} />
-          </div>
-
-          <div>
-            <span>Total XP</span>
-            <strong>{xp}</strong>
-            <small>Learning points</small>
-          </div>
-
-        </div>
-
-        <div className="stat-card">
-
-          <div className="stat-icon">
-            <Award size={21} />
-          </div>
-
-          <div>
-            <span>Current Level</span>
-            <strong>{level}</strong>
-            <small>Keep learning</small>
-          </div>
-
-        </div>
-
-        <div className="stat-card">
-
-          <div className="stat-icon">
+        <div className="dashboard-level">
+          <div className="dashboard-level-icon">
             <Trophy size={21} />
           </div>
 
           <div>
-            <span>Badges Earned</span>
-            <strong>{badges}</strong>
-            <small>Achievements</small>
+            <span>Current Level</span>
+            <strong>
+              Level {child.level || 1}
+            </strong>
           </div>
+        </div>
+      </div>
 
+      {/* CHILD SUMMARY */}
+
+      <section className="dashboard-child-card">
+        <div className="dashboard-child-avatar">
+          {child.name?.charAt(0)?.toUpperCase()}
         </div>
 
-        <div className="stat-card">
+        <div className="dashboard-child-info">
+          <h2>{child.name}</h2>
 
-          <div className="stat-icon">
-            <Clock size={21} />
+          <p>
+            Age {child.age} · Learning with KYROS
+          </p>
+        </div>
+
+        <div className="dashboard-child-xp">
+          <Star size={17} />
+          <strong>{child.xp || 0} XP</strong>
+        </div>
+      </section>
+
+      {/* STAT CARDS */}
+
+      <div className="dashboard-stats">
+
+        <div className="dashboard-stat">
+          <div className="dashboard-stat-icon">
+            <Star size={20} />
           </div>
 
           <div>
-            <span>Screen-free Time</span>
-            <strong>0h</strong>
-            <small>Tracked by KYROS</small>
+            <span>Total XP</span>
+            <strong>{child.xp || 0}</strong>
+            <small>Learning points</small>
           </div>
-
         </div>
 
-      </section>
+        <div className="dashboard-stat">
+          <div className="dashboard-stat-icon">
+            <Activity size={20} />
+          </div>
 
-      <section className="dashboard-content-grid">
+          <div>
+            <span>Sessions</span>
+            <strong>{completedSessions.length}</strong>
+            <small>Completed interactions</small>
+          </div>
+        </div>
 
-        <div className="dashboard-panel">
+        <div className="dashboard-stat">
+          <div className="dashboard-stat-icon">
+            <BookOpen size={20} />
+          </div>
 
-          <div className="panel-header">
+          <div>
+            <span>Stories</span>
+            <strong>{storyCount}</strong>
+            <small>Stories completed</small>
+          </div>
+        </div>
 
+        <div className="dashboard-stat">
+          <div className="dashboard-stat-icon">
+            <Clock3 size={20} />
+          </div>
+
+          <div>
+            <span>Screen-Free</span>
+            <strong>{screenFreeTime}</strong>
+            <small>Interactive learning</small>
+          </div>
+        </div>
+
+      </div>
+
+      {/* MAIN GRID */}
+
+      <div className="dashboard-main-grid">
+
+        {/* RECENT ACTIVITY */}
+
+        <section className="dashboard-panel">
+          <div className="dashboard-panel-header">
             <div>
-              <p className="eyebrow">
-                CULTURAL JOURNEY
-              </p>
-
-              <h3>Explore India</h3>
+              <p>RECENT ACTIVITY</p>
+              <h2>Learning sessions</h2>
             </div>
 
-            <a href="/cultural-journey">
+            <button
+              className="dashboard-link"
+              onClick={() => navigate("/progress")}
+            >
               View all
-              <ChevronRight size={16} />
-            </a>
-
+              <ArrowRight size={14} />
+            </button>
           </div>
 
-          <div className="journey-summary">
+          {recentSessions.length === 0 ? (
+            <div className="dashboard-no-activity">
+              <Activity size={25} />
 
-            <div className="journey-circle">
-              <span>0</span>
-              <small>/ 28</small>
+              <strong>No activity yet</strong>
+
+              <span>
+                Start a story or cultural activity to
+                begin tracking progress.
+              </span>
+            </div>
+          ) : (
+            <div className="dashboard-activity-list">
+              {recentSessions.map((session) => (
+                <div
+                  className="dashboard-activity"
+                  key={session._id}
+                >
+                  <div className="dashboard-activity-icon">
+                    {session.type === "story" ? (
+                      <BookOpen size={17} />
+                    ) : (
+                      <Sparkles size={17} />
+                    )}
+                  </div>
+
+                  <div className="dashboard-activity-content">
+                    <strong>
+                      {session.title ||
+                        "Learning Session"}
+                    </strong>
+
+                    <span>
+                      {formatDate(session.endedAt)} ·{" "}
+                      {formatDuration(
+                        session.durationSeconds
+                      )}
+                    </span>
+                  </div>
+
+                  <div className="dashboard-activity-xp">
+                    +{session.xpEarned || 0} XP
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+
+        {/* ACHIEVEMENTS */}
+
+        <section className="dashboard-panel">
+          <div className="dashboard-panel-header">
+            <div>
+              <p>ACHIEVEMENTS</p>
+              <h2>Badges earned</h2>
             </div>
 
-            <div className="journey-info">
-
-              <strong>States explored</strong>
-
-              <p>
-                Begin exploring India's 28 states and discover
-                their unique languages, festivals, food, arts
-                and heritage.
-              </p>
-
-              <a href="/cultural-journey">
-                Start exploring
-                <ChevronRight size={15} />
-              </a>
-
-            </div>
-
+            <button
+              className="dashboard-link"
+              onClick={() =>
+                navigate("/achievements")
+              }
+            >
+              View all
+              <ArrowRight size={14} />
+            </button>
           </div>
 
+          {earnedBadges.length === 0 ? (
+            <div className="dashboard-no-activity">
+              <Trophy size={25} />
+
+              <strong>No badges yet</strong>
+
+              <span>
+                Complete activities to unlock your first
+                achievement.
+              </span>
+            </div>
+          ) : (
+            <div className="dashboard-badges">
+              {earnedBadges
+                .slice(0, 4)
+                .map((badge) => (
+                  <div
+                    className="dashboard-badge"
+                    key={badge._id}
+                  >
+                    <div className="dashboard-badge-icon">
+                      {badge.icon || "🏆"}
+                    </div>
+
+                    <div>
+                      <strong>{badge.name}</strong>
+
+                      <span>
+                        {badge.description}
+                      </span>
+                    </div>
+                  </div>
+                ))}
+            </div>
+          )}
+        </section>
+
+      </div>
+
+      {/* QUICK ACTIONS */}
+
+      <section className="dashboard-panel dashboard-actions-panel">
+
+        <div className="dashboard-panel-header">
+          <div>
+            <p>QUICK ACTIONS</p>
+            <h2>Continue the journey</h2>
+          </div>
         </div>
 
-        <div className="dashboard-panel">
+        <div className="dashboard-actions">
 
-          <div className="panel-header">
+          <button
+            onClick={() => navigate("/stories")}
+          >
+            <div className="dashboard-action-icon">
+              <BookOpen size={20} />
+            </div>
 
             <div>
-              <p className="eyebrow">
-                ACTIVITY
-              </p>
-
-              <h3>Recent Activity</h3>
+              <strong>Explore Stories</strong>
+              <span>
+                Discover Indian stories and traditions
+              </span>
             </div>
 
-            <a href="/progress">
-              View progress
-              <ChevronRight size={16} />
-            </a>
+            <ArrowRight size={17} />
+          </button>
 
-          </div>
+          <button
+            onClick={() =>
+              navigate("/cultural-journey")
+            }
+          >
+            <div className="dashboard-action-icon">
+              <Sparkles size={20} />
+            </div>
 
-          <div className="empty-activity">
+            <div>
+              <strong>Cultural Journey</strong>
+              <span>
+                Explore India's states and cultures
+              </span>
+            </div>
 
-            <Clock size={28} />
+            <ArrowRight size={17} />
+          </button>
 
-            <strong>No activity yet</strong>
+          <button
+            onClick={() => navigate("/progress")}
+          >
+            <div className="dashboard-action-icon">
+              <Activity size={20} />
+            </div>
 
-            <p>
-              Start a story, cultural lesson or quiz with
-              KYROS to see activity here.
-            </p>
+            <div>
+              <strong>View Progress</strong>
+              <span>
+                See detailed learning analytics
+              </span>
+            </div>
 
-          </div>
-
-        </div>
-
-      </section>
-
-      <section className="dashboard-panel child-overview">
-
-        <div className="panel-header">
-
-          <div>
-            <p className="eyebrow">
-              CHILD PROFILE
-            </p>
-
-            <h3>{childName}</h3>
-          </div>
-
-          <a href="/children">
-            Manage profile
-            <ChevronRight size={16} />
-          </a>
+            <ArrowRight size={17} />
+          </button>
 
         </div>
-
-        <div className="child-overview-content">
-
-          <div className="overview-avatar">
-            {childInitial}
-          </div>
-
-          <div className="overview-details">
-
-            <strong>{childName}</strong>
-
-            <span>
-              Age {child?.age || "—"}
-            </span>
-
-          </div>
-
-          <div className="overview-stat">
-            <span>XP</span>
-            <strong>{xp}</strong>
-          </div>
-
-          <div className="overview-stat">
-            <span>Level</span>
-            <strong>{level}</strong>
-          </div>
-
-          <div className="overview-stat">
-            <span>Badges</span>
-            <strong>{badges}</strong>
-          </div>
-
-        </div>
-
       </section>
 
     </div>

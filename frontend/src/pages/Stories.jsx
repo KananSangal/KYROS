@@ -11,17 +11,26 @@ import {
   CheckCircle2,
 } from "lucide-react";
 import api from "../services/api";
+import "./Stories.css";
 
 export default function Stories() {
   const [stories, setStories] = useState([]);
   const [child, setChild] = useState(null);
+
   const [selectedStory, setSelectedStory] = useState(null);
+  const [activeSession, setActiveSession] = useState(null);
+
+  const [completedStories, setCompletedStories] = useState(
+    new Set()
+  );
 
   const [search, setSearch] = useState("");
   const [category, setCategory] = useState("all");
 
   const [loading, setLoading] = useState(true);
+  const [starting, setStarting] = useState(false);
   const [completing, setCompleting] = useState(false);
+
   const [message, setMessage] = useState("");
 
   useEffect(() => {
@@ -29,9 +38,14 @@ export default function Stories() {
     loadChild();
   }, []);
 
+  // ==========================================
+  // LOAD STORIES
+  // ==========================================
+
   const loadStories = async () => {
     try {
       const response = await api.get("/stories");
+
       setStories(response.data.stories || []);
     } catch (error) {
       console.error("Unable to load stories:", error);
@@ -40,355 +54,743 @@ export default function Stories() {
     }
   };
 
+  // ==========================================
+  // LOAD CHILD + COMPLETED STORIES
+  // ==========================================
+
   const loadChild = async () => {
     try {
       const response = await api.get("/children");
 
       const firstChild = response.data.children?.[0];
 
-      if (firstChild) {
-        setChild(firstChild);
+      if (!firstChild) {
+        return;
       }
+
+      setChild(firstChild);
+
+      // ------------------------------------------
+      // Load locally saved completed stories
+      // ------------------------------------------
+
+      const storageKey = `kyros_completed_stories_${firstChild._id}`;
+
+      const savedStories =
+        JSON.parse(
+          localStorage.getItem(storageKey) || "[]"
+        );
+
+      const completedSet = new Set(savedStories);
+
+      // ------------------------------------------
+      // Also check backend sessions
+      // ------------------------------------------
+
+      try {
+        const sessionsResponse = await api.get(
+          `/sessions/child/${firstChild._id}`
+        );
+
+        const sessions =
+          sessionsResponse.data.sessions || [];
+
+        sessions
+          .filter(
+            (session) =>
+              session.type === "story" &&
+              session.status === "completed"
+          )
+          .forEach((session) => {
+            if (session.title) {
+              completedSet.add(session.title);
+            }
+          });
+      } catch (sessionError) {
+        console.error(
+          "Unable to load story sessions:",
+          sessionError
+        );
+      }
+
+      setCompletedStories(completedSet);
+
+      // Save combined result locally
+      localStorage.setItem(
+        storageKey,
+        JSON.stringify([...completedSet])
+      );
+
     } catch (error) {
-      console.error("Unable to load child:", error);
+      console.error(
+        "Unable to load child:",
+        error
+      );
     }
   };
 
-  const categories = useMemo(() => {
-    const unique = [
-      ...new Set(stories.map((story) => story.category).filter(Boolean)),
-    ];
+  // ==========================================
+  // CATEGORIES
+  // ==========================================
 
-    return unique;
+  const categories = useMemo(() => {
+    return [
+      ...new Set(
+        stories
+          .map((story) => story.category)
+          .filter(Boolean)
+      ),
+    ];
   }, [stories]);
 
+  // ==========================================
+  // FILTER
+  // ==========================================
+
   const filteredStories = stories.filter((story) => {
+    const searchText = search.toLowerCase();
+
     const matchesSearch =
-      story.title?.toLowerCase().includes(search.toLowerCase()) ||
-      story.description?.toLowerCase().includes(search.toLowerCase());
+      story.title
+        ?.toLowerCase()
+        .includes(searchText) ||
+      story.description
+        ?.toLowerCase()
+        .includes(searchText);
 
     const matchesCategory =
-      category === "all" || story.category === category;
+      category === "all" ||
+      story.category === category;
 
     return matchesSearch && matchesCategory;
   });
 
-  const openStory = (story) => {
-    setMessage("");
-    setSelectedStory(story);
-  };
+  // ==========================================
+  // OPEN STORY
+  // ==========================================
 
-  const closeStory = () => {
-    if (!completing) {
-      setSelectedStory(null);
-      setMessage("");
+  const openStory = async (story) => {
+    setSelectedStory(story);
+    setActiveSession(null);
+    setMessage("");
+
+    if (!child) {
+      setMessage(
+        "Please create a child profile first."
+      );
+      return;
+    }
+
+    // Already completed
+    if (completedStories.has(story.title)) {
+      setMessage(
+        "You have already completed this story."
+      );
+      return;
+    }
+
+    setStarting(true);
+
+    try {
+      const response = await api.post(
+        "/sessions",
+        {
+          childId: child._id,
+          type: "story",
+          title: story.title,
+          state: story.state || null,
+          language: story.language || "English",
+        }
+      );
+
+      if (response.data.session) {
+        setActiveSession(
+          response.data.session
+        );
+      }
+
+    } catch (error) {
+      console.error(
+        "Unable to start story session:",
+        error
+      );
+
+      setMessage(
+        error.response?.data?.message ||
+          "Unable to start this story session."
+      );
+    } finally {
+      setStarting(false);
     }
   };
 
+  // ==========================================
+  // CLOSE STORY
+  // ==========================================
+
+  const closeStory = () => {
+    if (completing) {
+      return;
+    }
+
+    setSelectedStory(null);
+    setActiveSession(null);
+    setMessage("");
+  };
+
+  // ==========================================
+  // COMPLETE STORY
+  // ==========================================
+
   const completeStory = async () => {
-    if (!selectedStory || !child || completing) return;
+    if (
+      !selectedStory ||
+      !child ||
+      !activeSession ||
+      completing
+    ) {
+      return;
+    }
 
     setCompleting(true);
     setMessage("");
 
     try {
-      const duration = 120;
-
-      await api.post("/sessions", {
-        childId: child._id,
-        type: "story",
-        state: selectedStory.state || null,
-        language: selectedStory.language || "English",
-        duration,
-        status: "completed",
-      });
-
-      const xpResponse = await api.post(
-        `/progress/${child._id}/xp`,
-        {
-          amount: 10,
-          reason: `Completed story: ${selectedStory.title}`,
-        }
+      // End backend session
+      const response = await api.post(
+        `/sessions/${activeSession._id}/end`
       );
 
-      const updatedChild = xpResponse.data.child;
+      const earnedXP =
+        response.data.session?.xpEarned || 0;
 
-      if (updatedChild) {
-        setChild(updatedChild);
+      const progress =
+        response.data.progress;
+
+      // ------------------------------------------
+      // Update child XP
+      // ------------------------------------------
+
+      if (progress) {
+        setChild((current) => ({
+          ...current,
+          xp: progress.xp,
+          level: progress.level,
+        }));
       } else {
         setChild((current) => ({
           ...current,
-          xp: (current?.xp || 0) + 10,
+          xp: (current?.xp || 0) + earnedXP,
         }));
       }
 
-      setMessage("Story completed! +10 XP ⭐");
+      // ------------------------------------------
+      // MARK STORY AS COMPLETED
+      // ------------------------------------------
 
+      const storyTitle =
+        selectedStory.title;
+
+      setCompletedStories((current) => {
+        const updated = new Set(current);
+
+        updated.add(storyTitle);
+
+        // Save permanently for this child
+        const storageKey =
+          `kyros_completed_stories_${child._id}`;
+
+        localStorage.setItem(
+          storageKey,
+          JSON.stringify([...updated])
+        );
+
+        return updated;
+      });
+
+      // ------------------------------------------
+      // SUCCESS MESSAGE
+      // ------------------------------------------
+
+      setMessage(
+        `Story completed! +${earnedXP} XP`
+      );
+
+      // Close modal
       setTimeout(() => {
         setSelectedStory(null);
+        setActiveSession(null);
         setMessage("");
-      }, 1300);
+      }, 1800);
+
     } catch (error) {
-      console.error("Unable to complete story:", error);
+      console.error(
+        "Unable to complete story:",
+        error
+      );
 
       setMessage(
         error.response?.data?.message ||
-          "Unable to save this story session."
+          "Unable to complete this story session."
       );
     } finally {
       setCompleting(false);
     }
   };
 
+  // ==========================================
+  // RENDER
+  // ==========================================
+
   return (
-    <div className="page-content">
+    <div className="page-content stories-page">
 
-      <header className="page-header stories-page-header">
+      {/* HEADER */}
+      <header className="page-header stories-header">
+
         <div>
-          <p className="eyebrow">STORY WORLD</p>
+          <p className="eyebrow">
+            STORY WORLD
+          </p>
 
-          <h1>Stories with KYROS</h1>
+          <h1>Cultural Stories</h1>
 
           <p>
-            Explore stories, legends and little lessons from India's
-            rich cultural traditions.
+            Discover stories from Indian mythology,
+            traditions and cultural heritage.
           </p>
         </div>
 
         {child && (
-          <div className="stories-child-pill">
-            <div className="stories-child-avatar">
-              {child.name.charAt(0).toUpperCase()}
-            </div>
+          <div className="stories-xp-pill">
+            <Star size={16} />
 
-            <div>
-              <strong>{child.name}</strong>
-              <span>
-                <Star size={12} />
-                {child.xp || 0} XP
-              </span>
-            </div>
+            <strong>
+              {child.xp || 0} XP
+            </strong>
           </div>
         )}
+
       </header>
 
 
+      {/* SEARCH */}
       <div className="stories-toolbar">
 
         <div className="stories-search">
-          <Search size={17} />
+
+          <Search size={18} />
 
           <input
             type="text"
             placeholder="Search stories..."
             value={search}
-            onChange={(e) => setSearch(e.target.value)}
+            onChange={(event) =>
+              setSearch(event.target.value)
+            }
           />
+
         </div>
 
-        <select
-          className="story-filter"
-          value={category}
-          onChange={(e) => setCategory(e.target.value)}
-        >
-          <option value="all">All stories</option>
+
+        {/* CATEGORIES */}
+        <div className="stories-categories">
+
+          <button
+            type="button"
+            className={
+              category === "all"
+                ? "story-category active"
+                : "story-category"
+            }
+            onClick={() =>
+              setCategory("all")
+            }
+          >
+            All
+          </button>
 
           {categories.map((item) => (
-            <option key={item} value={item}>
-              {item
-                .replaceAll("_", " ")
-                .replace(/\b\w/g, (letter) => letter.toUpperCase())}
-            </option>
+            <button
+              type="button"
+              key={item}
+              className={
+                category === item
+                  ? "story-category active"
+                  : "story-category"
+              }
+              onClick={() =>
+                setCategory(item)
+              }
+            >
+              {item.replaceAll("_", " ")}
+            </button>
           ))}
-        </select>
+
+        </div>
 
       </div>
 
 
-      {loading ? (
-        <div className="loading-box">
-          <LoaderCircle className="spin" size={28} />
-          <p>Loading story world...</p>
-        </div>
-      ) : filteredStories.length === 0 ? (
+      {/* LOADING */}
+      {loading && (
+        <div className="stories-empty">
 
-        <div className="empty-state">
-          <BookOpen size={32} />
-
-          <h3>No stories found</h3>
+          <LoaderCircle
+            size={30}
+            className="stories-spin"
+          />
 
           <p>
-            Try another search or choose a different category.
+            Loading stories...
           </p>
+
         </div>
+      )}
 
-      ) : (
 
-        <div className="stories-grid">
+      {/* EMPTY */}
+      {!loading &&
+        filteredStories.length === 0 && (
+          <div className="stories-empty">
 
-          {filteredStories.map((story) => (
+            <BookOpen size={42} />
 
-            <article
-              className="story-card"
-              key={story._id}
-            >
+            <h3>
+              No stories found
+            </h3>
 
-              <div className="story-card-top">
+            <p>
+              Try another search or category.
+            </p>
 
-                <div className="story-card-icon">
-                  <BookOpen size={20} />
-                </div>
+          </div>
+        )}
 
-                <span className="story-category">
-                  {story.category?.replaceAll("_", " ")}
+
+      {/* STORIES */}
+      {!loading &&
+        filteredStories.length > 0 && (
+          <div className="stories-grid">
+
+            {filteredStories.map((story) => {
+
+              const isCompleted =
+                completedStories.has(
+                  story.title
+                );
+
+              return (
+                <article
+                  key={story._id}
+                  className={
+                    isCompleted
+                      ? "story-card completed"
+                      : "story-card"
+                  }
+                >
+
+                  {/* ICON */}
+                  <div
+                    className={
+                      isCompleted
+                        ? "story-card-icon completed"
+                        : "story-card-icon"
+                    }
+                  >
+                    {isCompleted ? (
+                      <CheckCircle2
+                        size={25}
+                      />
+                    ) : (
+                      <BookOpen
+                        size={25}
+                      />
+                    )}
+                  </div>
+
+
+                  {/* CONTENT */}
+                  <div className="story-card-content">
+
+                    <div className="story-card-top">
+
+                      <span className="story-category-label">
+                        {story.category?.replaceAll(
+                          "_",
+                          " "
+                        )}
+                      </span>
+
+                      {isCompleted && (
+                        <span className="story-completed-label">
+                          Completed
+                        </span>
+                      )}
+
+                    </div>
+
+
+                    <h3>
+                      {story.title}
+                    </h3>
+
+                    <p>
+                      {story.description}
+                    </p>
+
+
+                    <div className="story-meta">
+
+                      <span>
+                        <Clock3 size={14} />
+
+                        Cultural Story
+                      </span>
+
+                      <span>
+                        <Sparkles size={14} />
+
+                        Earn XP
+                      </span>
+
+                    </div>
+
+                  </div>
+
+
+                  {/* BUTTON */}
+                  <button
+                    type="button"
+                    className={
+                      isCompleted
+                        ? "story-open-btn completed"
+                        : "story-open-btn"
+                    }
+                    onClick={() =>
+                      openStory(story)
+                    }
+                  >
+
+                    {isCompleted ? (
+                      <>
+                        <CheckCircle2
+                          size={16}
+                        />
+
+                        Completed
+                      </>
+                    ) : (
+                      <>
+                        <Play size={16} />
+
+                        Read Story
+                      </>
+                    )}
+
+                  </button>
+
+                </article>
+              );
+            })}
+
+          </div>
+        )}
+
+
+      {/* MODAL */}
+      {selectedStory && (
+        <div
+          className="story-modal-overlay"
+          onClick={closeStory}
+        >
+
+          <div
+            className="story-modal"
+            onClick={(event) =>
+              event.stopPropagation()
+            }
+          >
+
+            {/* MODAL HEADER */}
+            <div className="story-modal-header">
+
+              <div>
+
+                <span className="story-modal-category">
+                  {selectedStory.category?.replaceAll(
+                    "_",
+                    " "
+                  )}
                 </span>
 
-              </div>
-
-
-              <h3>{story.title}</h3>
-
-              <p>
-                {story.description}
-              </p>
-
-
-              <div className="story-meta">
-
-                <span>
-                  <Clock3 size={12} />
-                  Ages {story.ageMin || 5}–{story.ageMax || 14}
-                </span>
-
-                <span>
-                  {story.language || "English"}
-                </span>
+                <h2>
+                  {selectedStory.title}
+                </h2>
 
               </div>
 
 
               <button
-                className="story-open-button"
-                onClick={() => openStory(story)}
+                type="button"
+                className="story-close-btn"
+                onClick={closeStory}
+                disabled={completing}
               >
-                <Play size={15} />
-                Explore Story
+                <X size={20} />
               </button>
 
-            </article>
-
-          ))}
-
-        </div>
-
-      )}
-
-
-      {selectedStory && (
-
-        <div
-          className="story-modal-overlay"
-          onMouseDown={(e) => {
-            if (e.target === e.currentTarget) {
-              closeStory();
-            }
-          }}
-        >
-
-          <div className="story-modal">
-
-            <button
-              className="story-modal-close"
-              onClick={closeStory}
-              disabled={completing}
-            >
-              <X size={19} />
-            </button>
-
-
-            <div className="story-modal-icon">
-              <BookOpen size={25} />
             </div>
 
 
-            <p className="eyebrow">
-              {selectedStory.category?.replaceAll("_", " ")}
-            </p>
+            {/* CONTENT */}
+            <div className="story-modal-content">
 
-            <h2>{selectedStory.title}</h2>
+              {starting ? (
+                <div className="story-loading">
 
-            <div className="story-modal-meta">
-              <span>
-                Ages {selectedStory.ageMin || 5}–
-                {selectedStory.ageMax || 14}
-              </span>
+                  <LoaderCircle
+                    size={28}
+                    className="stories-spin"
+                  />
 
-              <span>
-                {selectedStory.language || "English"}
-              </span>
-
-              {selectedStory.state && (
-                <span>{selectedStory.state}</span>
-              )}
-            </div>
-
-
-            <div className="story-content">
-
-              {selectedStory.content
-                ?.split(/\n+/)
-                .filter(Boolean)
-                .map((paragraph, index) => (
-                  <p key={index}>
-                    {paragraph}
+                  <p>
+                    Starting story...
                   </p>
-                ))}
+
+                </div>
+              ) : (
+                <p>
+                  {selectedStory.content}
+                </p>
+              )}
 
             </div>
 
 
+            {/* MESSAGE */}
             {message && (
-              <div className="story-success-message">
-                {message}
+              <div
+                className={
+                  message.includes(
+                    "Story completed!"
+                  )
+                    ? "story-message success"
+                    : "story-message"
+                }
+              >
+
+                {message.includes(
+                  "Story completed!"
+                ) ? (
+                  <CheckCircle2 size={18} />
+                ) : (
+                  <Sparkles size={18} />
+                )}
+
+                <span>
+                  {message}
+                </span>
+
               </div>
             )}
 
 
+            {/* FOOTER */}
             <div className="story-modal-footer">
 
-              <div className="story-reward">
-                <Sparkles size={17} />
-                <span>Complete this story</span>
-                <strong>+10 XP</strong>
-              </div>
+              {completedStories.has(
+                selectedStory.title
+              ) ? (
 
-              <button
-                className="story-complete-button"
-                onClick={completeStory}
-                disabled={completing || !child}
-              >
-                {completing ? (
-                  <>
-                    <LoaderCircle
-                      size={16}
-                      className="spin"
+                <>
+                  <div className="story-completed-info">
+
+                    <CheckCircle2
+                      size={20}
                     />
-                    Saving...
-                  </>
-                ) : (
-                  <>
-                    <CheckCircle2 size={16} />
-                    Mark Complete
-                  </>
-                )}
-              </button>
+
+                    <div>
+
+                      <strong>
+                        Story completed
+                      </strong>
+
+                      <span>
+                        This story has already
+                        been completed.
+                      </span>
+
+                    </div>
+
+                  </div>
+
+
+                  <button
+                    type="button"
+                    className="story-done-btn"
+                    onClick={closeStory}
+                  >
+                    Done
+                  </button>
+                </>
+
+              ) : (
+
+                <>
+
+                  <div className="story-session-info">
+
+                    <Sparkles size={19} />
+
+                    <span>
+                      Complete this story to
+                      earn XP and track progress.
+                    </span>
+
+                  </div>
+
+
+                  <button
+                    type="button"
+                    className="story-complete-btn"
+                    onClick={completeStory}
+                    disabled={
+                      completing ||
+                      starting ||
+                      !activeSession
+                    }
+                  >
+
+                    {completing ? (
+                      <>
+                        <LoaderCircle
+                          size={18}
+                          className="stories-spin"
+                        />
+
+                        Completing...
+                      </>
+                    ) : (
+                      <>
+                        <CheckCircle2
+                          size={18}
+                        />
+
+                        Complete Story
+                      </>
+                    )}
+
+                  </button>
+
+                </>
+              )}
 
             </div>
 
           </div>
 
         </div>
-
       )}
 
     </div>

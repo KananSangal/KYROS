@@ -10,6 +10,9 @@ import Login from "./pages/Login";
 import Dashboard from "./pages/Dashboard";
 import Children from "./pages/Children";
 import CulturalJourney from "./pages/CulturalJourney";
+import Achievements from "./pages/Achievements";
+import Progress from "./pages/Progress";
+import TalkToKyros from "./pages/TalkToKyros";
 import AppLayout from "./components/AppLayout";
 
 function ProtectedRoute() {
@@ -24,7 +27,6 @@ function App() {
   return (
     <BrowserRouter>
       <Routes>
-
         <Route
           path="/"
           element={
@@ -48,10 +50,15 @@ function App() {
         />
 
         <Route element={<ProtectedRoute />}>
+          <Route
+            path="/dashboard"
+            element={<Dashboard />}
+          />
 
-          <Route path="/dashboard" element={<Dashboard />} />
-
-          <Route path="/children" element={<Children />} />
+          <Route
+            path="/children"
+            element={<Children />}
+          />
 
           <Route
             path="/cultural-journey"
@@ -60,23 +67,22 @@ function App() {
 
           <Route
             path="/stories"
-            element={
-              token ? <Stories /> : <Navigate to="/login" replace />
-            }
+            element={<Stories />}
+          />
+
+          <Route
+            path="/talk-to-kyros"
+            element={<TalkToKyros />}
           />
 
           <Route
             path="/achievements"
-            element={
-              <Placeholder title="Achievements" />
-            }
+            element={<Achievements />}
           />
 
           <Route
             path="/progress"
-            element={
-              <Placeholder title="Progress" />
-            }
+            element={<Progress />}
           />
 
           <Route
@@ -85,14 +91,12 @@ function App() {
               <Placeholder title="Settings" />
             }
           />
-
         </Route>
 
         <Route
           path="*"
           element={<Navigate to="/" replace />}
         />
-
       </Routes>
     </BrowserRouter>
   );
@@ -102,9 +106,7 @@ function Placeholder({ title }) {
   return (
     <div className="page-content">
       <p className="eyebrow">KYROS</p>
-
       <h1>{title}</h1>
-
       <p>
         This section is being connected to the KYROS backend.
       </p>
